@@ -40,11 +40,13 @@ def format_owner_report(
     stock_alerts: list[SKUAlert],
     adv_alerts: list[SKUAlert],
     profit_items: list[ProfitItem],
-    tacoo: float,
 ) -> str:
     now  = datetime.now(MOSCOW_TZ)
-    tacoo_icon = drr_emoji(tacoo)
-    tacoo_str  = f"{tacoo:.1f}%" if tacoo > 0 else "нет данных по рекламе"
+    tacoo = metrics.tacoo
+    drr   = metrics.drr
+    tacoo_icon = drr_emoji(max(tacoo, drr))
+    tacoo_str  = f"{tacoo:.1f}%" if tacoo > 0 else "нет данных"
+    drr_str    = f"{drr:.1f}%"   if drr   > 0 else "нет данных"
 
     total_revenue = sum(p.revenue    for p in profit_items)
     total_net     = sum(p.net_profit for p in profit_items)
@@ -57,7 +59,7 @@ def format_owner_report(
         "",
         f"💰 Продажи:  *{metrics.revenue_today:,.0f} ₽*",
         f"📦 Заказов:  *{metrics.orders_today} шт*",
-        f"{tacoo_icon} ДРР (TACOO): *{tacoo_str}*",
+        f"{tacoo_icon} TACOO: *{tacoo_str}* | ДРР: *{drr_str}*",
         f"🔄 Выкуп:    *{metrics.buyout_rate:.0f}%*",
     ]
 
@@ -105,11 +107,13 @@ def format_work_chat_report(
     adv_alerts: list[SKUAlert],
     campaigns: list[AdvCampaignInfo],
     rating_alerts: list[RatingAlert],
-    tacoo: float,
 ) -> str:
     now  = datetime.now(MOSCOW_TZ)
-    tacoo_icon = drr_emoji(tacoo)
+    tacoo = metrics.tacoo
+    drr   = metrics.drr
+    tacoo_icon = drr_emoji(max(tacoo, drr))
     tacoo_str  = f"{tacoo:.1f}%" if tacoo > 0 else "нет данных"
+    drr_str    = f"{drr:.1f}%"   if drr   > 0 else "нет данных"
 
     orders_delta = ""
     if metrics.orders_yesterday > 0:
@@ -124,6 +128,7 @@ def format_work_chat_report(
         f"📦 Заказов:  *{metrics.orders_today} шт*{orders_delta}",
         f"💰 Выручка:  *{metrics.revenue_today:,.0f} ₽*",
         f"{tacoo_icon} TACOO:    *{tacoo_str}*",
+        f"📈 ДРР:      *{drr_str}*",
         f"🔄 Выкуп:    *{metrics.buyout_rate:.0f}%*",
         "───────────────────",
     ]
