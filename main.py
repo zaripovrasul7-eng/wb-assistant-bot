@@ -1,13 +1,13 @@
 """
-Главный файл WB-бота WB_Assistant7_bot.
+Главный файл WB_Assistant7_bot.
 
-Переменные окружения (задаются на Railway):
-  WB_STATS_TOKEN     — токен статистики WB (только чтение)
-  WB_ADV_TOKEN       — токен рекламы WB (только чтение)
-  TELEGRAM_BOT_TOKEN — токен бота от BotFather
-  OWNER_CHAT_ID      — ваш личный Telegram chat ID
-  WB_WORK_CHAT_ID    — ID группы "WB рабочий чат" (вы + Юля)
-  WB_GENERAL_CHAT_ID — ID группы "WB общий чат" (вы + Юля + Элина)
+Переменные окружения (Railway):
+  WB_STATS_TOKEN     — токен статистики WB
+  WB_ADV_TOKEN       — токен рекламы WB
+  TELEGRAM_BOT_TOKEN — токен бота
+  OWNER_CHAT_ID      — ваш личный Telegram ID (394336434)
+  WB_WORK_CHAT_ID    — ID "WB рабочий чат"
+  WB_GENERAL_CHAT_ID — ID "WB общий чат"
   REPORT_HOUR        — час отправки по МСК (по умолчанию 7)
 """
 
@@ -21,7 +21,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from wb_api   import WBClient
 from analyzer import (
     analyze_orders, analyze_stocks, analyze_adv,
-    analyze_ratings, analyze_profit, calc_buyout_rate
+    analyze_ratings, analyze_profit,
+    calc_buyout_rate, calc_sales_revenue
 )
 from formatter import (
     format_owner_report,
@@ -33,7 +34,6 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("wb_bot")
 
-# ── Конфигурация ──
 WB_STATS_TOKEN     = os.environ["WB_STATS_TOKEN"]
 WB_ADV_TOKEN       = os.environ["WB_ADV_TOKEN"]
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -57,35 +57,45 @@ async def send_daily_report():
     nm_report    = wb.get_nm_report(days_back=7)
     weekly       = wb.get_weekly_report()
 
-    metrics, order_alerts        = analyze_orders(orders)
-    metrics.buyout_rate          = calc_buyout_rate(orders, sales)
-    stock_alerts                 = analyze_stocks(stocks, orders)
-    tacoo, campaigns, adv_alerts = analyze_adv(adv_stats)
-    rating_alerts                = analyze_ratings(nm_report)
-    profit_items                 = analyze_profit(weekly, adv_stats)
-    metrics.tacoo                = tacoo
+    metrics, order_alerts = analyze_orders(orders)
+    metrics.buyout_rate   = calc_buyout_rate(orders, sales)
+    metrics.sales_revenue = calc_sales_revenue(sales)
 
-    logger.info(f"Алертов: реклама={len(adv_alerts)}, склад={len(stock_alerts)}, "
-                f"заказы={len(order_alerts)}, рейтинг={len(rating_alerts)}, "
-                f"товаров с ЧП<15%={sum(1 for p in profit_items if p.needs_attention)}")
+    stock_alerts = analyze_stocks(stocks, orders)
 
-    # 1. Вам в личку — финансы + ЧП
+    # Считаем TACOO и ДРР раздельно
+    tacoo, drr, ad_spend, campaigns, adv_alerts = analyze_adv(
+        adv_stats,
+        orders_revenue=metrics.revenue_today,
+        sales_revenue=metrics.sales_revenue
+    )
+    metrics.tacoo    = tacoo
+    metrics.drr      = drr
+    metrics.ad_spend = ad_spend
+
+    rating_alerts = analyze_ratings(nm_report)
+    profit_items  = analyze_profit(weekly, adv_stats)
+
+    logger.info(f"TACOO={tacoo:.1f}%, ДРР={drr:.1f}%, расходы={ad_spend:.0f}₽, "
+                f"алертов: реклама={len(adv_alerts)}, склад={len(stock_alerts)}, "
+                f"заказы={len(order_alerts)}, рейтинг={len(rating_alerts)}")
+
+    # 1. Вам в личку
     await safe_send(bot, OWNER_CHAT_ID, format_owner_report(
-        metrics, order_alerts, stock_alerts, adv_alerts, profit_items, tacoo
+        metrics, order_alerts, stock_alerts, adv_alerts, profit_items
     ))
 
-    # 2. "WB рабочий чат" — для вас и Юли (реклама, склад, рейтинг, рекомендации)
+    # 2. "WB рабочий чат" (вы + Юля)
     if WB_WORK_CHAT_ID:
         await safe_send(bot, WB_WORK_CHAT_ID, format_work_chat_report(
-            metrics, order_alerts, stock_alerts, adv_alerts,
-            campaigns, rating_alerts, tacoo
+            metrics, order_alerts, stock_alerts, adv_alerts, campaigns, rating_alerts
         ))
 
-    # 3. "WB общий чат" — только рейтинг для Элины
+    # 3. "WB общий чат" (только рейтинг для Элины)
     if WB_GENERAL_CHAT_ID:
         await safe_send(bot, WB_GENERAL_CHAT_ID, format_general_chat_report(rating_alerts))
 
-    logger.info(f"✅ Готово. Следующий отчёт в {REPORT_HOUR}:00 МСК")
+    logger.info(f"✅ Отчёты разосланы. Следующий в {REPORT_HOUR}:00 МСК")
 
 
 async def safe_send(bot: Bot, chat_id: int, text: str):
@@ -127,36 +137,27 @@ async def handle_updates(bot: Bot):
                 if text == "/start":
                     await bot.send_message(chat_id, parse_mode="Markdown", text=(
                         f"👋 *WB\\_Assistant7\\_bot запущен!*\n\n"
-                        f"Ежедневный отчёт в *{REPORT_HOUR}:00 МСК*.\n\n"
+                        f"Ежедневный отчёт в *{REPORT_HOUR}:00 МСК*\n\n"
                         f"/report — отчёт прямо сейчас\n"
                         f"/status — проверить работу бота\n"
                         f"/chatid — узнать ID этого чата"
                     ))
-
                 elif text == "/report":
-                    await bot.send_message(chat_id, "⏳ Собираю данные из WB, подождите...")
+                    await bot.send_message(chat_id, "⏳ Собираю данные из WB...")
                     await send_daily_report()
-
                 elif text == "/status":
                     now = datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M")
                     await bot.send_message(chat_id, parse_mode="Markdown", text=(
-                        f"✅ *Бот работает*\n"
-                        f"Время МСК: `{now}`\n"
-                        f"Отчёт в {REPORT_HOUR}:00 МСК"
+                        f"✅ *Бот работает*\nВремя МСК: `{now}`"
                     ))
-
                 elif text == "/chatid":
-                    # Специальная команда чтобы узнать ID группы
-                    ctype = msg.chat.type
                     cname = msg.chat.title or msg.chat.first_name or "—"
                     await bot.send_message(chat_id, parse_mode="Markdown", text=(
                         f"📍 *Информация о чате:*\n"
                         f"ID: `{chat_id}`\n"
                         f"Название: {cname}\n"
-                        f"Тип: {ctype}\n\n"
-                        f"Скопируйте ID и вставьте в Railway как переменную"
+                        f"Тип: {msg.chat.type}"
                     ))
-
         except TelegramError as e:
             logger.error(f"Telegram error: {e}")
             await asyncio.sleep(5)
@@ -167,17 +168,15 @@ async def handle_updates(bot: Bot):
 
 async def main():
     logger.info("🚀 WB_Assistant7_bot запускается...")
-
     scheduler = AsyncIOScheduler(timezone=MOSCOW_TZ)
     scheduler.add_job(send_daily_report, "cron", hour=REPORT_HOUR, minute=0)
     scheduler.start()
-
     try:
         bot = Bot(token=TELEGRAM_BOT_TOKEN)
         await bot.send_message(OWNER_CHAT_ID, parse_mode="Markdown", text=(
             f"✅ *WB\\_Assistant7\\_bot запущен!*\n"
-            f"Отчёт ежедневно в *{REPORT_HOUR}:00 МСК*\n\n"
-            f"Напишите /chatid в каждой группе чтобы узнать ID группы"
+            f"Отчёт в *{REPORT_HOUR}:00 МСК* ежедневно\n"
+            f"/report — получить отчёт сейчас"
         ))
     except Exception as e:
         logger.error(f"Стартовое сообщение: {e}")
