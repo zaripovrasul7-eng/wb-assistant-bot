@@ -166,7 +166,7 @@ def analyze_orders(orders: list) -> tuple[DailyMetrics, list[SKUAlert]]:
         if o.get("isCancel"):
             continue
         nm   = o.get("nmId", 0)
-        name = o.get("subject", f"Арт. #{nm}")
+        name = o.get("supplierArticle") or o.get("subject", f"#{nm}")
         rev  = float(o.get("totalPrice", 0)) * (1 - float(o.get("discountPercent", 0)) / 100)
 
         by_date_sku[o_date][nm]["orders"]  += 1
@@ -217,14 +217,14 @@ def analyze_stocks(stocks: list, orders: list) -> list[SKUAlert]:
         if (today - o_date).days <= 7:
             nm = o.get("nmId", 0)
             sales_7d[nm] += 1
-            names[nm] = o.get("subject", f"Арт. #{nm}")
+            names[nm] = o.get("supplierArticle") or o.get("subject", f"#{nm}")
 
     stock_map = defaultdict(int)
     for s in stocks:
         nm = s.get("nmId", 0)
         stock_map[nm] += int(s.get("quantity", 0))
         if nm not in names:
-            names[nm] = s.get("subject", f"Арт. #{nm}")
+            names[nm] = s.get("supplierArticle") or s.get("subject", f"#{nm}")
 
     alerts = []
     for nm, total in stock_map.items():
@@ -366,7 +366,7 @@ def analyze_profit(weekly_report: list, adv_stats: list) -> list[ProfitItem]:
         nm   = int(row.get("nmId", 0) or 0)
         if nm == 0:
             continue
-        name = row.get("subject", f"Арт. #{nm}")
+        name = row.get("supplierArticle") or row.get("subject", f"#{nm}")
         by_nm[nm]["name"]       = name
         # Выручка = цена продажи (retailAmount) или totalPrice
         by_nm[nm]["revenue"]   += float(row.get("retailAmount", 0) or row.get("ppvzForPay", 0) or 0)
