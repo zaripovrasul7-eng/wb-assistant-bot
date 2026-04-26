@@ -1,13 +1,9 @@
 """
-Форматирование сообщений для Telegram.
-
-Получатели:
-  OWNER (личка)      — выручка, TACOO, склад, реклама, ЧИСТАЯ ПРИБЫЛЬ + рекомендации по ЧП
-  WB_WORK_CHAT       — "WB рабочий чат" (вы + Юля): всё + ДРР по кампаниям + рекомендации по РК
-  WB_GENERAL_CHAT    — "WB общий чат" (вы + Юля + Элина): только рейтинг для Элины
+Форматирование сообщений — стиль Sirena AI: чистый, по артикулам.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta, date
+from collections import defaultdict
 from analyzer import (
     DailyMetrics, SKUAlert, AdvCampaignInfo, RatingAlert, ProfitItem,
     drr_emoji, drr_label, rating_emoji, rating_label,
@@ -17,9 +13,25 @@ import pytz
 
 MOSCOW_TZ = pytz.timezone("Europe/Moscow")
 
+MIN_STOCK_FILTER = 5      # товары с остатком < 5 шт не показываем
+MIN_SALES_FILTER = 0.1    # и средними продажами < 0.1/день — это мёртвый сток
+
+
+def _short_name(name: str, nm: int, max_len: int = 28) -> str:
+    """Название + артикул, обрезанное до max_len символов."""
+    short = name[:max_len] + ("…" if len(name) > max_len else "")
+    return f"{short} (#{nm})"
+
+
+def _today_range() -> str:
+    now = datetime.now(MOSCOW_TZ)
+    yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    today = now.strftime("%Y-%m-%d")
+    return f"{yesterday} — {today}"
+
 
 # ════════════════════════════════════════════════════════
-#  ВАМ В ЛИЧКУ — полный отчёт с чистой прибылью
+#  ВАМ В ЛИЧКУ
 # ════════════════════════════════════════════════════════
 
 def format_owner_report(
@@ -31,80 +43,59 @@ def format_owner_report(
     tacoo: float,
 ) -> str:
     now  = datetime.now(MOSCOW_TZ)
-    date = now.strftime("%d %b %Y")
     tacoo_icon = drr_emoji(tacoo)
-    tacoo_warn = " ⚠ ВЫШЕ ЦЕЛИ" if tacoo > DRR_GREEN else ""
+    tacoo_str  = f"{tacoo:.1f}%" if tacoo > 0 else "нет данных по рекламе"
 
-    orders_delta = ""
-    if metrics.orders_yesterday > 0:
-        diff = metrics.orders_today - metrics.orders_yesterday
-        sign = "+" if diff >= 0 else ""
-        orders_delta = f" ({sign}{diff} vs вчера)"
-
-    # Считаем суммарную ЧП
-    total_revenue   = sum(p.revenue    for p in profit_items)
-    total_net       = sum(p.net_profit for p in profit_items)
-    avg_net_pct     = (total_net / total_revenue * 100) if total_revenue > 0 else 0.0
-    low_profit_items= [p for p in profit_items if p.needs_attention]
+    total_revenue = sum(p.revenue    for p in profit_items)
+    total_net     = sum(p.net_profit for p in profit_items)
+    avg_net_pct   = (total_net / total_revenue * 100) if total_revenue > 0 else 0.0
+    low_profit    = [p for p in profit_items if p.needs_attention]
 
     lines = [
-        f"📊 *Личный отчёт — {date}*",
+        f"📊 *Личный отчёт*",
+        f"📅 {_today_range()}",
         "",
-        f"💰 Выручка (сегодня): *{metrics.revenue_today:,.0f} ₽*",
-        f"📦 Заказов: *{metrics.orders_today}*{orders_delta}",
-        f"{tacoo_icon} TACOO: *{tacoo:.1f}%*{tacoo_warn}",
-        f"🔄 Выкуп: *{metrics.buyout_rate:.0f}%*",
-        "",
+        f"💰 Продажи:  *{metrics.revenue_today:,.0f} ₽*",
+        f"📦 Заказов:  *{metrics.orders_today} шт*",
+        f"{tacoo_icon} ДРР (TACOO): *{tacoo_str}*",
+        f"🔄 Выкуп:    *{metrics.buyout_rate:.0f}%*",
     ]
 
-    # ── Чистая прибыль ──
     if profit_items:
         cp_icon = "✅" if avg_net_pct >= 15 else ("🟡" if avg_net_pct >= 10 else "🔴")
         lines += [
-            "💎 *Чистая прибыль (неделя):*",
-            f"   Выручка:  {total_revenue:,.0f} ₽",
-            f"   ЧП:       {total_net:,.0f} ₽  ({avg_net_pct:.1f}%)",
-            f"   УСН 7%:   {sum(p.tax for p in profit_items):,.0f} ₽",
-            f"   {cp_icon} Средняя маржа: *{avg_net_pct:.1f}%*",
             "",
+            f"💎 *Чистая прибыль (неделя):*",
+            f"   Выручка: {total_revenue:,.0f} ₽",
+            f"   ЧП: {total_net:,.0f} ₽ ({avg_net_pct:.1f}%)",
+            f"   УСН 7%: {sum(p.tax for p in profit_items):,.0f} ₽",
+            f"   {cp_icon} Средняя маржа: *{avg_net_pct:.1f}%*",
         ]
 
-        if low_profit_items:
-            lines.append(f"⚠ *Товары с ЧП ниже {MIN_PROFIT_PCT:.0f}% — требуют внимания:*")
-            for p in low_profit_items[:7]:
-                pct_icon = "🔴" if p.net_profit_pct < 10 else "🟡"
-                lines.append(f"{pct_icon} *{p.name[:30]}*  ЧП: {p.net_profit_pct:.1f}%")
-                lines.append(f"   👉 {p.recommendation}")
-            lines.append("")
+    # Критичные алерты
+    critical = [a for a in (adv_alerts + stock_alerts + order_alerts) if a.severity == "critical"]
+    if critical:
+        lines += ["", "🚨 *Срочно:*"]
+        for a in critical:
+            icon = {"drr":"📉","stock":"📦","orders":"📊"}.get(a.alert_type,"⚠")
+            lines.append(f"{icon} {_short_name(a.name, a.nmId)} — {a.message}")
 
-    # ── Критичные алерты ──
-    all_critical = [a for a in (adv_alerts + stock_alerts + order_alerts) if a.severity == "critical"]
-    if all_critical:
-        lines.append("🚨 *СРОЧНО:*")
-        for a in all_critical:
-            icon = {"drr": "📉", "stock": "📦", "orders": "📊"}.get(a.alert_type, "⚠")
-            lines.append(f"{icon} *{a.name}* — {a.message}")
-            lines.append(f"   👉 {a.action}")
-        lines.append("")
+    # ЧП ниже 15%
+    if low_profit:
+        lines += ["", f"⚠ *ЧП < {MIN_PROFIT_PCT:.0f}% — требуют внимания:*"]
+        for p in low_profit[:7]:
+            icon = "🔴" if p.net_profit_pct < 10 else "🟡"
+            lines.append(f"{icon} {_short_name(p.name, p.nmId)} — ЧП {p.net_profit_pct:.1f}%")
+            lines.append(f"   👉 {p.recommendation}")
 
-    # ── Предупреждения ──
-    all_warn = [a for a in (adv_alerts + stock_alerts + order_alerts) if a.severity == "warning"]
-    if all_warn:
-        lines.append("🟡 *Следить:*")
-        for a in all_warn:
-            icon = {"drr": "📉", "stock": "📦", "orders": "📊"}.get(a.alert_type, "⚠")
-            lines.append(f"{icon} {a.name} — {a.message}")
-        lines.append("")
-
-    total_alerts = len(all_critical) + len(all_warn)
-    if total_alerts == 0 and not low_profit_items:
-        lines.append("✅ Всё в норме. Хорошего дня!")
+    if not critical and not low_profit:
+        lines += ["", "✅ Всё в норме. Хорошего дня!"]
 
     return "\n".join(lines)
 
 
 # ════════════════════════════════════════════════════════
-#  "WB РАБОЧИЙ ЧАТ" — для вас и Юли
+#  "WB РАБОЧИЙ ЧАТ" — вы + Юля
 # ════════════════════════════════════════════════════════
 
 def format_work_chat_report(
@@ -117,53 +108,64 @@ def format_work_chat_report(
     tacoo: float,
 ) -> str:
     now  = datetime.now(MOSCOW_TZ)
-    date = now.strftime("%d %b %Y")
     tacoo_icon = drr_emoji(tacoo)
-    tacoo_warn = " ⚠ ВЫШЕ ЦЕЛИ" if tacoo > DRR_GREEN else ""
+    tacoo_str  = f"{tacoo:.1f}%" if tacoo > 0 else "нет данных"
 
     orders_delta = ""
     if metrics.orders_yesterday > 0:
         diff = metrics.orders_today - metrics.orders_yesterday
         sign = "+" if diff >= 0 else ""
-        orders_delta = f" ({sign}{diff})"
+        orders_delta = f" ({sign}{diff} vs вчера)"
 
     lines = [
-        f"📋 *WB Рабочий чат — {date}*",
-        "",
-        f"📦 Заказов: *{metrics.orders_today}*{orders_delta}",
-        f"💰 Выручка: *{metrics.revenue_today:,.0f} ₽*",
-        f"{tacoo_icon} TACOO: *{tacoo:.1f}%*{tacoo_warn}",
-        f"🔄 Выкуп: *{metrics.buyout_rate:.0f}%*",
-        "",
+        f"📋 *WB Рабочий чат*",
+        f"📅 {_today_range()}",
+        "───────────────────",
+        f"📦 Заказов:  *{metrics.orders_today} шт*{orders_delta}",
+        f"💰 Выручка:  *{metrics.revenue_today:,.0f} ₽*",
+        f"{tacoo_icon} TACOO:    *{tacoo_str}*",
+        f"🔄 Выкуп:    *{metrics.buyout_rate:.0f}%*",
+        "───────────────────",
     ]
 
-    # ── Срочные задачи для Юли ──
-    all_critical = [a for a in (adv_alerts + stock_alerts + order_alerts) if a.severity == "critical"]
-    if all_critical:
-        lines.append("🚨 *Юля, срочно:*")
-        for a in all_critical:
-            icon = {"drr": "📉", "stock": "📦", "orders": "📊"}.get(a.alert_type, "⚠")
-            lines.append(f"{icon} *{a.name}* — {a.message}")
-            lines.append(f"   👉 {a.action}")
-        lines.append("")
-
-    # ── ДРР по всем кампаниям ──
-    if campaigns:
-        lines.append("📣 *Рекламные кампании — ДРР:*")
-        for c in campaigns[:15]:
+    # ── Реклама по кампаниям ──
+    active_camps = [c for c in campaigns if c.drr > 0 or c.orders > 0]
+    if active_camps:
+        lines.append("📣 *Рекламные кампании:*")
+        for c in active_camps[:20]:
             icon = drr_emoji(c.drr)
-            lines.append(f"{icon} {c.name[:32]} — *{c.drr:.1f}%* | {c.spend_per_day:.0f} ₽/д")
+            lines.append(
+                f"{icon} {c.name[:30]} — ДРР *{c.drr:.1f}%* | {c.spend_per_day:.0f} ₽/д"
+            )
             if c.drr > DRR_GREEN:
                 lines.append(f"   👉 {c.recommendation}")
         lines.append("")
 
-    # ── Склад ──
-    stock_alerts_sorted = sorted(stock_alerts, key=lambda a: 0 if a.severity == "critical" else 1)
-    if stock_alerts_sorted:
-        lines.append("📦 *Остатки:*")
-        for a in stock_alerts_sorted:
+    # ── Склад — только реальные товары (остаток ≥ 5 шт) ──
+    real_stock = [a for a in stock_alerts if _is_real_stock(a)]
+    if real_stock:
+        lines.append("📦 *Остатки — требуют внимания:*")
+        seen = set()
+        for a in real_stock:
+            key = (a.nmId, a.alert_type)
+            if key in seen:
+                continue
+            seen.add(key)
             icon = "🔴" if a.severity == "critical" else "🟡"
-            lines.append(f"{icon} {a.name} — {a.message}")
+            lines.append(f"{icon} {_short_name(a.name, a.nmId)}")
+            lines.append(f"   {a.message} — {a.action}")
+        lines.append("")
+
+    # ── Падение заказов — только значимые ──
+    real_orders = [a for a in order_alerts if _is_significant_drop(a)]
+    if real_orders:
+        lines.append("📊 *Падение заказов по артикулам:*")
+        seen = set()
+        for a in real_orders:
+            if a.nmId in seen:
+                continue
+            seen.add(a.nmId)
+            lines.append(f"📉 {_short_name(a.name, a.nmId)} — {a.message}")
             lines.append(f"   👉 {a.action}")
         lines.append("")
 
@@ -171,18 +173,12 @@ def format_work_chat_report(
     if rating_alerts:
         lines.append("⭐ *Рейтинг (проблемные товары):*")
         for a in rating_alerts:
-            lines.append(f"{rating_emoji(a.rating_now)} {a.name} — {a.message}")
+            lines.append(
+                f"{rating_emoji(a.rating_now)} {_short_name(a.name, a.nmId)} — {a.message}"
+            )
         lines.append("")
 
-    # ── Рекомендации по заказам ──
-    if order_alerts:
-        lines.append("📊 *Падение заказов:*")
-        for a in order_alerts:
-            lines.append(f"📉 {a.name} — {a.message}")
-            lines.append(f"   👉 {a.action}")
-        lines.append("")
-
-    if not all_critical and not [a for a in (adv_alerts + stock_alerts + order_alerts) if a.severity == "warning"]:
+    if not active_camps and not real_stock and not real_orders and not rating_alerts:
         lines.append("✅ Показатели в норме!")
 
     return "\n".join(lines)
@@ -193,14 +189,12 @@ def format_work_chat_report(
 # ════════════════════════════════════════════════════════
 
 def format_general_chat_report(rating_alerts: list[RatingAlert]) -> str:
-    """
-    Отчёт в "WB общий чат" — только рейтинг товаров для Элины.
-    Элина видит проблемный товар и самостоятельно проводит анализ.
-    """
     now  = datetime.now(MOSCOW_TZ)
-    date = now.strftime("%d %b")
-
-    lines = [f"⭐ *Рейтинг товаров — {date}*", ""]
+    lines = [
+        f"⭐ *Рейтинг товаров*",
+        f"📅 {now.strftime('%d %b %Y')}",
+        "",
+    ]
 
     critical = [a for a in rating_alerts if a.severity == "critical"]
     warnings = [a for a in rating_alerts if a.severity == "warning"]
@@ -208,19 +202,50 @@ def format_general_chat_report(rating_alerts: list[RatingAlert]) -> str:
     if critical:
         lines.append("🔴 *Элина, срочно — рейтинг ниже 4.5:*")
         for a in critical:
-            lines.append(f"• *{a.name}* — {a.message}")
-            lines.append(f"  👉 Срочный анализ отзывов, работа с недовольными покупателями")
+            lines.append(f"• *{_short_name(a.name, a.nmId)}*")
+            lines.append(f"  {a.message}")
+            lines.append(f"  👉 Срочный анализ отзывов, работа с покупателями")
         lines.append("")
 
     if warnings:
-        lines.append("🟡 *Нужен анализ — рейтинг снижается:*")
+        lines.append("🟡 *Рейтинг снижается — нужен анализ:*")
         for a in warnings:
-            lines.append(f"• *{a.name}* — {a.message}")
+            lines.append(f"• {_short_name(a.name, a.nmId)} — {a.message}")
         lines.append("")
-        lines.append("👉 Элина, зайди в карточки этих товаров и разбери последние отзывы")
+        lines.append("👉 Элина, разбери последние отзывы по этим товарам")
 
     if not critical and not warnings:
-        lines.append("✅ Рейтинг всех товаров в норме!\n\n"
-                     "_Пороги: <4.5 🔴 критично | 4.6 🟡 допустимо | 4.7 🟢 хорошо | ≥4.8 ✅ отлично_")
+        lines.append(
+            "✅ Рейтинг всех товаров в норме!\n\n"
+            "_<4.5 🔴 критично | 4.6 🟡 допустимо | 4.7 🟢 хорошо | ≥4.8 ✅ отлично_"
+        )
 
     return "\n".join(lines)
+
+
+# ════════════════════════════════════════════════════════
+#  Фильтры
+# ════════════════════════════════════════════════════════
+
+def _is_real_stock(alert: SKUAlert) -> bool:
+    """Пропускаем товары с нулевым остатком — скорее всего не продаём."""
+    msg = alert.message.lower()
+    # Извлекаем количество штук из сообщения вида "Остаток на X дней (Y шт.)"
+    try:
+        qty_str = msg.split("(")[1].split(" шт")[0]
+        qty = int(qty_str)
+        return qty >= MIN_STOCK_FILTER
+    except Exception:
+        return True  # если не можем разобрать — показываем
+
+
+def _is_significant_drop(alert: SKUAlert) -> bool:
+    """Пропускаем падения где абсолютные цифры ничтожны (1→0 шт.)."""
+    msg = alert.message
+    try:
+        # Формат: "Заказы −X% за 2 дня (A→B шт.)"
+        counts = msg.split("(")[1].split(" шт")[0]
+        before = int(counts.split("→")[0])
+        return before >= 3   # игнорируем если базовое значение < 3 заказов
+    except Exception:
+        return True
