@@ -22,7 +22,8 @@ from wb_api   import WBClient
 from analyzer import (
     analyze_orders, analyze_stocks, analyze_adv,
     analyze_ratings, analyze_profit,
-    calc_buyout_rate, calc_sales_revenue
+    calc_buyout_rate, calc_buyout_rate_from_nm,
+    calc_sales_revenue, calc_sales_revenue_from_nm
 )
 from formatter import (
     format_owner_report,
