@@ -70,11 +70,22 @@ class WBClient:
     # ───────────────────────── остатки ─────────────────────────
 
     def get_stocks(self) -> list:
-        """Текущие остатки на складах WB и FBS."""
+        """Текущие остатки на складах WB. Поддерживает пагинацию (лимит 60к строк)."""
         date_from = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%dT00:00:00")
-        data = self._get(self.STATS_BASE, "/api/v1/supplier/stocks", "stats",
-                         params={"dateFrom": date_from})
-        return data if isinstance(data, list) else []
+        all_stocks = []
+        last_change_date = date_from
+        while True:
+            data = self._get(self.STATS_BASE, "/api/v1/supplier/stocks", "stats",
+                             params={"dateFrom": last_change_date})
+            if not isinstance(data, list) or len(data) == 0:
+                break
+            all_stocks += data
+            if len(data) < 60000:
+                break   # получили все строки
+            # Берём дату последней записи для следующей страницы
+            last_change_date = data[-1].get("lastChangeDate", last_change_date)
+            import time; time.sleep(1)  # соблюдаем лимит 1 запрос/мин
+        return all_stocks
 
     # ───────────────────────── реклама ─────────────────────────
 
