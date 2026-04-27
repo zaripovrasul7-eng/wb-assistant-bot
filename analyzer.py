@@ -267,22 +267,44 @@ def calc_buyout_rate_from_nm(nm_report: dict) -> tuple[float, bool]:
 
 
 def calc_buyout_rate(orders: list, sales: list) -> tuple[float, bool]:
-    """Запасной вариант если nm-report недоступен."""
+    """
+    Выкуп = кол-во продаж / кол-во заказов за последние 30 дней.
+    Используем 30 дней чтобы учесть время доставки (до 14 дней).
+    forPay > 0 означает подтверждённый выкуп.
+    """
     today = date.today()
+    cutoff = today - timedelta(days=30)
+
     ord_cnt  = sum(
         1 for o in orders
         if not o.get("isCancel")
-        and _parse_date(o.get("date")) >= today - timedelta(days=14)
+        and _parse_date(o.get("date")) >= cutoff
     )
+    # Считаем только реальные выкупы (saleID начинается с S, не с R — возврат)
     sale_cnt = sum(
         1 for s in sales
-        if _parse_date(s.get("date")) >= today - timedelta(days=14)
+        if _parse_date(s.get("date")) >= cutoff
+        and str(s.get("saleID", "")).startswith("S")
+        and float(s.get("forPay", 0) or 0) > 0
     )
     if ord_cnt == 0:
         return 0.0, False
     rate     = min(sale_cnt / ord_cnt * 100, 100.0)
-    reliable = sale_cnt > 0 and (sale_cnt / ord_cnt) > 0.05
+    reliable = sale_cnt >= 5  # минимум 5 выкупов чтобы считать достоверным
     return rate, reliable
+
+
+def calc_sales_revenue(sales: list) -> float:
+    """Выручка по выкупам = сумма forPay за последние 7 дней."""
+    today  = date.today()
+    cutoff = today - timedelta(days=7)
+    return sum(
+        float(s.get("forPay", 0) or 0)
+        for s in sales
+        if _parse_date(s.get("date")) >= cutoff
+        and str(s.get("saleID", "")).startswith("S")
+        and float(s.get("forPay", 0) or 0) > 0
+    )
 
 # ── Анализ остатков ──────────────────────────────────────
 def analyze_stocks(stocks: list, orders: list) -> list[SKUAlert]:
