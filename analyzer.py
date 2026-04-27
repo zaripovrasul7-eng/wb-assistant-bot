@@ -73,14 +73,15 @@ def rating_label(r: float) -> str:
 # ── Структуры данных ─────────────────────────────────────
 @dataclass
 class DailyMetrics:
-    orders_today:     int   = 0
-    orders_yesterday: int   = 0
-    revenue_today:    float = 0.0   # выручка (заказы)
-    sales_revenue:    float = 0.0   # выручка (выкупы — фактические продажи)
-    buyout_rate:      float = 0.0
-    ad_spend:         float = 0.0   # расходы на рекламу
-    tacoo:            float = 0.0   # spend / orders_value * 100
-    drr:              float = 0.0   # spend / sales_value * 100
+    orders_today:      int   = 0
+    orders_yesterday:  int   = 0
+    revenue_today:     float = 0.0   # выручка (заказы)
+    sales_revenue:     float = 0.0   # выручка (выкупы)
+    buyout_rate:       float = 0.0
+    buyout_reliable:   bool  = False  # False = данные WB ещё не обновились
+    ad_spend:          float = 0.0
+    tacoo:             float = 0.0
+    drr:               float = 0.0
 
 @dataclass
 class SKUAlert:
@@ -232,7 +233,12 @@ def calc_sales_revenue(sales: list) -> float:
             total += float(s.get("forPay", 0) or s.get("priceWithDisc", 0) or 0)
     return total
 
-def calc_buyout_rate(orders: list, sales: list) -> float:
+def calc_buyout_rate(orders: list, sales: list) -> tuple[float, bool]:
+    """
+    Возвращает (процент_выкупа, данные_достоверны).
+    WB API отдаёт продажи с задержкой 5–14 дней.
+    Если продаж < 10% от заказов — данные ещё не обновились.
+    """
     today = date.today()
     ord_cnt  = sum(
         1 for o in orders
@@ -243,7 +249,12 @@ def calc_buyout_rate(orders: list, sales: list) -> float:
         1 for s in sales
         if _parse_date(s.get("date")) >= today - timedelta(days=14)
     )
-    return min(sale_cnt / ord_cnt * 100, 100.0) if ord_cnt > 0 else 0.0
+    if ord_cnt == 0:
+        return 0.0, False
+    rate = min(sale_cnt / ord_cnt * 100, 100.0)
+    # Если продаж меньше 5% от заказов — данные ещё не пришли от WB
+    reliable = sale_cnt > 0 and (sale_cnt / ord_cnt) > 0.05
+    return rate, reliable
 
 # ── Анализ остатков ──────────────────────────────────────
 def analyze_stocks(stocks: list, orders: list) -> list[SKUAlert]:
