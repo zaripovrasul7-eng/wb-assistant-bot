@@ -163,7 +163,9 @@ def analyze_orders(orders: list) -> tuple[DailyMetrics, list[SKUAlert]]:
         if o.get("isCancel"):
             continue
         nm  = o.get("nmId", 0)
-        rev = float(o.get("totalPrice", 0)) * (1 - float(o.get("discountPercent", 0)) / 100)
+        # priceWithDisc — цена покупателя со скидкой (самое точное поле)
+        rev = float(o.get("priceWithDisc") or
+                    o.get("totalPrice", 0) * (1 - float(o.get("discountPercent", 0)) / 100))
         name = _item_name(o, nm)
 
         by_date[o_date][nm]["orders"]  += 1
@@ -176,10 +178,25 @@ def analyze_orders(orders: list) -> tuple[DailyMetrics, list[SKUAlert]]:
         elif o_date == yesterday:
             total_yest_orders   += 1
 
+    # Основная метрика — ВЧЕРАШНИЙ полный день (как у Sirena)
+    # "Сегодня" — только частичные данные с 00:00, они всегда занижены
+    by_date_total: dict[date, dict] = defaultdict(lambda: {"orders": 0, "revenue": 0.0})
+    for o2 in orders:
+        try:
+            d2 = datetime.fromisoformat(o2.get("date", "")[:10]).date()
+        except Exception:
+            continue
+        if o2.get("isCancel"):
+            continue
+        r2 = float(o2.get("priceWithDisc") or
+                   float(o2.get("totalPrice", 0)) * (1 - float(o2.get("discountPercent", 0)) / 100))
+        by_date_total[d2]["orders"]  += 1
+        by_date_total[d2]["revenue"] += r2
+
     metrics = DailyMetrics(
-        orders_today     = total_today_orders,
-        orders_yesterday = total_yest_orders,
-        revenue_today    = total_today_revenue,
+        orders_today     = by_date_total[yesterday]["orders"],    # вчера — полный день
+        orders_yesterday = by_date_total[day_2ago]["orders"],     # позавчера — для сравнения
+        revenue_today    = by_date_total[yesterday]["revenue"],   # выручка вчера
     )
 
     # Алерты по падению заказов — только значимые
@@ -257,9 +274,11 @@ def analyze_stocks(stocks: list, orders: list) -> list[SKUAlert]:
     for nm, total_qty in stock_map.items():
         avg_sales = sales_7d.get(nm, 0) / 7
 
-        # Фильтр мёртвого стока: нет ни остатка ни продаж
+        # Фильтр мёртвого стока
+        if total_qty == 0:
+            continue   # нулевой остаток — всегда пропускаем
         if total_qty < STOCK_MIN_QTY and avg_sales < STOCK_MIN_SALES:
-            continue
+            continue   # меньше 5 шт и почти не продаётся — пропускаем
 
         if avg_sales < 0.01:
             continue  # товар не продаётся — пропускаем
