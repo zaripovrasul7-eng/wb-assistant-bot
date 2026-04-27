@@ -220,8 +220,19 @@ def analyze_orders(orders: list) -> tuple[DailyMetrics, list[SKUAlert]]:
     return metrics, alerts
 
 # ── Анализ выкупов (продаж) ──────────────────────────────
+def calc_sales_revenue_from_nm(nm_report: dict) -> float:
+    """Сумма выкупов из nm-report (buyoutsSumRub) — точнее чем sales API."""
+    cards = nm_report.get("data", {}).get("cards", [])
+    total = 0.0
+    for card in cards:
+        stats  = card.get("statistics", {})
+        period = stats.get("selectedPeriod", {})
+        total += float(period.get("buyoutsSumRub", 0) or 0)
+    return total
+
+
 def calc_sales_revenue(sales: list) -> float:
-    """Сумма фактических выкупов за последние 7 дней."""
+    """Запасной вариант расчёта выкупов через sales API."""
     today = date.today()
     total = 0.0
     for s in sales:
@@ -233,12 +244,30 @@ def calc_sales_revenue(sales: list) -> float:
             total += float(s.get("forPay", 0) or s.get("priceWithDisc", 0) or 0)
     return total
 
-def calc_buyout_rate(orders: list, sales: list) -> tuple[float, bool]:
+def calc_buyout_rate_from_nm(nm_report: dict) -> tuple[float, bool]:
     """
+    Правильный расчёт выкупа из nm-report.
+    nm-report содержит готовые поля ordersCount и buyoutsCount по каждому артикулу.
+    Это тот же источник что используют MPSTATS, Torgstat и другие сервисы.
     Возвращает (процент_выкупа, данные_достоверны).
-    WB API отдаёт продажи с задержкой 5–14 дней.
-    Если продаж < 10% от заказов — данные ещё не обновились.
     """
+    cards = nm_report.get("data", {}).get("cards", [])
+    total_orders  = 0
+    total_buyouts = 0
+    for card in cards:
+        stats  = card.get("statistics", {})
+        period = stats.get("selectedPeriod", {})
+        total_orders  += int(period.get("ordersCount",  0) or 0)
+        total_buyouts += int(period.get("buyoutsCount", 0) or 0)
+    if total_orders == 0:
+        return 0.0, False
+    rate     = min(total_buyouts / total_orders * 100, 100.0)
+    reliable = total_buyouts > 0
+    return rate, reliable
+
+
+def calc_buyout_rate(orders: list, sales: list) -> tuple[float, bool]:
+    """Запасной вариант если nm-report недоступен."""
     today = date.today()
     ord_cnt  = sum(
         1 for o in orders
@@ -251,8 +280,7 @@ def calc_buyout_rate(orders: list, sales: list) -> tuple[float, bool]:
     )
     if ord_cnt == 0:
         return 0.0, False
-    rate = min(sale_cnt / ord_cnt * 100, 100.0)
-    # Если продаж меньше 5% от заказов — данные ещё не пришли от WB
+    rate     = min(sale_cnt / ord_cnt * 100, 100.0)
     reliable = sale_cnt > 0 and (sale_cnt / ord_cnt) > 0.05
     return rate, reliable
 
