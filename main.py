@@ -58,7 +58,7 @@ async def send_daily_report():
     weekly       = wb.get_weekly_report()
 
     metrics, order_alerts = analyze_orders(orders)
-    metrics.buyout_rate   = calc_buyout_rate(orders, sales)
+    metrics.buyout_rate, metrics.buyout_reliable = calc_buyout_rate(orders, sales)
     metrics.sales_revenue = calc_sales_revenue(sales)
 
     stock_alerts = analyze_stocks(stocks, orders)
