@@ -19,6 +19,7 @@ from telegram.error import TelegramError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from wb_api   import WBClient
+from debug_report import run_debug
 from analyzer import (
     analyze_orders, analyze_stocks, analyze_adv,
     analyze_ratings, analyze_profit,
@@ -159,6 +160,20 @@ async def handle_updates(bot: Bot):
                         f"Название: {cname}\n"
                         f"Тип: {msg.chat.type}"
                     ))
+
+                elif text == "/debug":
+                    # Только для владельца
+                    if chat_id != OWNER_CHAT_ID:
+                        await bot.send_message(chat_id, "⛔ Команда только для владельца")
+                        continue
+                    await bot.send_message(chat_id, "🔍 Запускаю диагностику WB API, подождите...")
+                    try:
+                        wb_debug = WBClient(stats_token=WB_STATS_TOKEN, adv_token=WB_ADV_TOKEN)
+                        debug_text = run_debug(wb_debug)
+                        for chunk in _split(debug_text, 4000):
+                            await bot.send_message(chat_id, chunk, parse_mode="Markdown")
+                    except Exception as e:
+                        await bot.send_message(chat_id, f"❌ Ошибка диагностики: {e}")
         except TelegramError as e:
             logger.error(f"Telegram error: {e}")
             await asyncio.sleep(5)
