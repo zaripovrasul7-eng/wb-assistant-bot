@@ -46,7 +46,16 @@ REPORT_HOUR        = int(os.environ.get("REPORT_HOUR", "7"))
 MOSCOW_TZ          = pytz.timezone("Europe/Moscow")
 
 
+_report_lock = asyncio.Lock()
+
 async def send_daily_report():
+    if _report_lock.locked():
+        logger.warning("Отчёт уже формируется — пропускаем дублирующий запрос")
+        return
+    async with _report_lock:
+        await _do_send_daily_report()
+
+async def _do_send_daily_report():
     logger.info("📡 Сбор данных из WB API...")
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
     wb  = WBClient(stats_token=WB_STATS_TOKEN, adv_token=WB_ADV_TOKEN)
