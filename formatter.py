@@ -24,10 +24,11 @@ def _short_name(name: str, nm: int, max_len: int = 28) -> str:
 
 
 def _today_range() -> str:
+    """Показываем вчерашний полный день — как у Sirena AI."""
     now = datetime.now(MOSCOW_TZ)
+    day2ago   = (now - timedelta(days=2)).strftime("%Y-%m-%d")
     yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
-    today = now.strftime("%Y-%m-%d")
-    return f"{yesterday} — {today}"
+    return f"{day2ago} — {yesterday}"
 
 
 # ════════════════════════════════════════════════════════
