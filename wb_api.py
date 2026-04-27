@@ -95,15 +95,11 @@ class WBClient:
         return data if isinstance(data, dict) else {}
 
     def get_campaign_ids(self) -> list[int]:
-        """ID всех активных кампаний (статус 7 = идёт, 9 = готова)."""
-        # Статусы: 7 — кампания идёт, 9 — завершена, 11 — пауза
-        active = []
-        for status in (7, 11):  # активные + на паузе (нужно следить)
-            data = self._get(self.ADV_BASE, "/adv/v1/promotion/adverts", "adv",
-                             params={"status": status, "type": 8, "limit": 100})
-            if isinstance(data, list):
-                active += [item.get("advertId") for item in data if item.get("advertId")]
-        return active
+        """ID всех активных и приостановленных кампаний."""
+        camps = self.get_adv_campaign_list()
+        ids   = [c.get("advertId") for c in camps if c.get("advertId")]
+        logger.info(f"Найдено кампаний: {len(ids)}")
+        return ids
 
     def get_adv_stats(self, campaign_ids: list[int]) -> list:
         """
@@ -129,25 +125,57 @@ class WBClient:
 
     def get_nm_report(self, days_back: int = 7) -> dict:
         """
-        Отчёт по каждому артикулу (nm-report) через подписку Джем.
-        Содержит: заказы, выкуп, конверсию, рейтинг товара.
+        Отчёт по артикулам через API аналитики (подписка Джем).
+        Пробуем несколько эндпоинтов — WB периодически меняет URL.
         """
         date_to   = date.today().isoformat()
         date_from = (date.today() - timedelta(days=days_back)).isoformat()
-        url = "https://seller-analytics-api.wildberries.ru/api/v2/nm-report/day"
-        headers = {"Authorization": self.stats_token}
-        payload = {
+        payload   = {
             "period": {"begin": date_from, "end": date_to},
             "timezone": "Europe/Moscow",
             "page": 1
         }
-        try:
-            r = requests.post(url, headers=headers, json=payload, timeout=30)
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            logger.error(f"WB nm-report error: {e}")
-            return {}
+        headers = {"Authorization": self.stats_token}
+
+        endpoints = [
+            "https://seller-analytics-api.wildberries.ru/api/v2/nm-report/day",
+            "https://seller-analytics-api.wildberries.ru/api/v2/nm-report/grouped/day",
+        ]
+        for url in endpoints:
+            try:
+                r = requests.post(url, headers=headers, json=payload, timeout=30)
+                if r.status_code == 200:
+                    data = r.json()
+                    if data and data != {}:
+                        logger.info(f"nm-report OK: {url}")
+                        return data
+                else:
+                    logger.warning(f"nm-report {url}: HTTP {r.status_code} — {r.text[:100]}")
+            except Exception as e:
+                logger.error(f"nm-report error {url}: {e}")
+        return {}
+
+    def get_adv_campaign_list(self) -> list:
+        """Получаем список всех кампаний через прямой запрос."""
+        # Пробуем разные статусы и типы
+        all_camps = []
+        for status in [7, 9, 11]:  # 7=идёт, 9=завершена, 11=пауза
+            for adv_type in [8, 9]:  # 8=авто, 9=поиск
+                try:
+                    url = f"{self.ADV_BASE}/adv/v1/promotion/adverts"
+                    r = requests.get(url, headers=self._adv_headers(),
+                                     params={"status": status, "type": adv_type, "limit": 100},
+                                     timeout=30)
+                    if r.status_code == 200:
+                        data = r.json()
+                        if isinstance(data, list):
+                            all_camps += data
+                    elif r.status_code == 401:
+                        logger.error(f"ADV API 401 Unauthorized — проверьте WB_ADV_TOKEN")
+                        return []
+                except Exception as e:
+                    logger.error(f"adv campaign list error: {e}")
+        return all_camps
 
     def get_weekly_report(self) -> list:
         """Финансовый еженедельный отчёт WB."""
