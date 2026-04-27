@@ -184,6 +184,8 @@ async def handle_updates(bot: Bot):
 
 async def main():
     logger.info("🚀 WB_Assistant7_bot запускается...")
+    # Небольшая задержка при старте — Railway иногда загружает переменные с задержкой
+    await asyncio.sleep(3)
     scheduler = AsyncIOScheduler(timezone=MOSCOW_TZ)
     scheduler.add_job(send_daily_report, "cron", hour=REPORT_HOUR, minute=0)
     scheduler.start()
