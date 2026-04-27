@@ -61,7 +61,7 @@ def format_owner_report(
         f"💰 Продажи:  *{metrics.revenue_today:,.0f} ₽*",
         f"📦 Заказов:  *{metrics.orders_today} шт*",
         f"{tacoo_icon} TACOO: *{tacoo_str}* | ДРР: *{drr_str}*",
-        f"🔄 Выкуп:    *{metrics.buyout_rate:.0f}%*",
+        f"🔄 Выкуп:    *{'обновляется ⏳' if not metrics.buyout_reliable else f'{metrics.buyout_rate:.0f}%'}*",
     ]
 
     if profit_items:
@@ -130,7 +130,7 @@ def format_work_chat_report(
         f"💰 Выручка:  *{metrics.revenue_today:,.0f} ₽*",
         f"{tacoo_icon} TACOO:    *{tacoo_str}*",
         f"📈 ДРР:      *{drr_str}*",
-        f"🔄 Выкуп:    *{metrics.buyout_rate:.0f}%*",
+        f"🔄 Выкуп:    *{'обновляется ⏳' if not metrics.buyout_reliable else f'{metrics.buyout_rate:.0f}%'}*",
         "───────────────────",
     ]
 
