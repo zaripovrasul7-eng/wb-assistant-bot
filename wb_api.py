@@ -156,25 +156,43 @@ class WBClient:
         return {}
 
     def get_adv_campaign_list(self) -> list:
-        """Получаем список всех кампаний через прямой запрос."""
-        # Пробуем разные статусы и типы
+        """
+        Получаем список всех кампаний.
+        WB статусы: 7=идёт, 9=завершена, 11=пауза, 4=готова
+        WB типы: 4=каталог, 5=карточка, 6=поиск, 7=рекомендации, 8=авто, 9=аукцион
+        """
         all_camps = []
-        for status in [7, 9, 11]:  # 7=идёт, 9=завершена, 11=пауза
-            for adv_type in [8, 9]:  # 8=авто, 9=поиск
-                try:
-                    url = f"{self.ADV_BASE}/adv/v1/promotion/adverts"
-                    r = requests.get(url, headers=self._adv_headers(),
-                                     params={"status": status, "type": adv_type, "limit": 100},
-                                     timeout=30)
-                    if r.status_code == 200:
-                        data = r.json()
-                        if isinstance(data, list):
-                            all_camps += data
-                    elif r.status_code == 401:
-                        logger.error(f"ADV API 401 Unauthorized — проверьте WB_ADV_TOKEN")
-                        return []
-                except Exception as e:
-                    logger.error(f"adv campaign list error: {e}")
+        # Сначала пробуем универсальный эндпоинт без фильтров
+        try:
+            url = f"{self.ADV_BASE}/adv/v1/promotion/count"
+            r = requests.get(url, headers=self._adv_headers(), timeout=30)
+            logger.info(f"ADV count: HTTP {r.status_code} → {r.text[:100]}")
+            if r.status_code == 401:
+                logger.error("ADV API 401 — токен неверный или нет прав")
+                return []
+        except Exception as e:
+            logger.error(f"ADV count error: {e}")
+
+        # Перебираем все статусы
+        for status in [7, 11, 4, 9]:
+            try:
+                url = f"{self.ADV_BASE}/adv/v1/promotion/adverts"
+                r = requests.get(url, headers=self._adv_headers(),
+                                 params={"status": status, "limit": 100},
+                                 timeout=30)
+                logger.info(f"ADV status={status}: HTTP {r.status_code} → {r.text[:80]}")
+                if r.status_code == 200:
+                    data = r.json()
+                    if isinstance(data, list) and data:
+                        logger.info(f"  Найдено кампаний со статусом {status}: {len(data)}")
+                        all_camps += data
+                elif r.status_code == 401:
+                    logger.error("ADV 401 — останавливаем перебор")
+                    return []
+            except Exception as e:
+                logger.error(f"ADV status={status} error: {e}")
+
+        logger.info(f"Итого кампаний: {len(all_camps)}")
         return all_camps
 
     def get_weekly_report(self) -> list:
